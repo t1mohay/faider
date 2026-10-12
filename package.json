@@ -1,0 +1,17 @@
+{
+  "name": "fader-project",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Прототип: интерфейс с фейдером (fader-ui) + тестовый сервер (fader-server)",
+  "type": "module",
+  "scripts": {
+    "postinstall": "npm install --prefix fader-server && npm install --prefix fader-ui",
+    "dev": "node scripts/dev.mjs",
+    "dev:server": "npm run dev --prefix fader-server",
+    "dev:ui": "npm run dev --prefix fader-ui",
+    "typecheck": "npm run typecheck --prefix fader-server && npm run typecheck --prefix fader-ui"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
