@@ -20,8 +20,23 @@ export interface FaderMessage {
   ts: number
 }
 
+/** Клиент -> сервер: пользователь взял ручку — занять фейдер, чтобы другие не могли его двигать. */
+export interface GrabMessage {
+  type: 'grab'
+  id: number
+}
+
+/** Клиент -> сервер: пользователь отпустил ручку — освободить фейдер. */
+export interface ReleaseMessage {
+  type: 'release'
+  id: number
+}
+
 /** Кто изменил фейдер: 'client' — один из интерфейсов, 'hw' — физический фейдер. */
 export type FaderSource = 'client' | 'hw'
+
+/** Кто сейчас управляет фейдером: номер клиента, 'hw' — физический фейдер, null — свободен. */
+export type LockOwner = number | 'hw' | null
 
 /** Сервер -> клиент: сразу после подключения. */
 export interface HelloMessage {
@@ -42,8 +57,20 @@ export interface StateMessage {
   by?: number
 }
 
+/**
+ * Сервер -> клиент: захват фейдера изменился. Приходит при подключении, при каждой смене владельца
+ * и в ответ на попытку подвинуть занятый фейдер (следом идёт state с текущим значением).
+ */
+export interface LockMessage {
+  type: 'lock'
+  id: number
+  owner: LockOwner
+  /** true — держат ручку (до release), false — короткий захват кнопками/клавиатурой/железом. */
+  held: boolean
+}
+
 /** Входящие сообщения, на которые интерфейс реагирует. ack и error пока только пишутся в лог. */
-export type ServerMessage = HelloMessage | StateMessage
+export type ServerMessage = HelloMessage | StateMessage | LockMessage
 
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v)
 
@@ -66,6 +93,14 @@ export function parseServerMessage(raw: string): ServerMessage | null {
       source: m.source,
       by: isInt(m.by) ? m.by : undefined,
     }
+  }
+  if (
+    m.type === 'lock' &&
+    isInt(m.id) &&
+    (m.owner === null || m.owner === 'hw' || isInt(m.owner)) &&
+    typeof m.held === 'boolean'
+  ) {
+    return { type: 'lock', id: m.id, owner: m.owner, held: m.held }
   }
   return null
 }

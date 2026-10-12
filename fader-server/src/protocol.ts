@@ -1,7 +1,7 @@
 /**
  * Формат сообщений — зеркало фронтового src/lib/protocol.ts.
- * Клиент -> сервер: FaderMessage
- * Сервер -> клиент: HelloMessage | AckMessage | StateMessage | ErrorMessage
+ * Клиент -> сервер: FaderMessage | GrabMessage | ReleaseMessage
+ * Сервер -> клиент: HelloMessage | AckMessage | StateMessage | LockMessage | ErrorMessage
  */
 
 export const FADER_MIN = 0
@@ -14,6 +14,20 @@ export interface FaderMessage {
   seq: number
   ts: number
 }
+
+/** Пользователь взял ручку — занять фейдер, пока не придёт release. */
+export interface GrabMessage {
+  type: 'grab'
+  id: number
+}
+
+/** Пользователь отпустил ручку — освободить фейдер. */
+export interface ReleaseMessage {
+  type: 'release'
+  id: number
+}
+
+export type ClientMessage = FaderMessage | GrabMessage | ReleaseMessage
 
 export interface HelloMessage {
   type: 'hello'
@@ -48,15 +62,30 @@ export interface StateMessage {
 
 export type FaderSource = 'client' | 'hw'
 
+/** Кто сейчас управляет фейдером: номер клиента, 'hw' — физический фейдер, null — свободен. */
+export type LockOwner = number | 'hw' | null
+
+/**
+ * Захват фейдера изменился. Рассылается всем; новому клиенту — сразу после hello.
+ * Отказ в захвате (фейдер занят другим) приходит тому, кому отказали, и следом — state с текущим значением.
+ */
+export interface LockMessage {
+  type: 'lock'
+  id: number
+  owner: LockOwner
+  /** true — захват ручкой (до release), false — короткий, сам снимется через LOCK_MS. */
+  held: boolean
+}
+
 export interface ErrorMessage {
   type: 'error'
   reason: string
   raw?: string
 }
 
-export type ServerMessage = HelloMessage | AckMessage | StateMessage | ErrorMessage
+export type ServerMessage = HelloMessage | AckMessage | StateMessage | LockMessage | ErrorMessage
 
-export type ParseResult = { ok: true; msg: FaderMessage } | { ok: false; reason: string }
+export type ParseResult = { ok: true; msg: ClientMessage } | { ok: false; reason: string }
 
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v)
 
@@ -72,8 +101,11 @@ export function parseMessage(raw: string): ParseResult {
     return { ok: false, reason: 'ожидался JSON-объект' }
   }
   const m = data as Record<string, unknown>
-  if (m.type !== 'fader') return { ok: false, reason: `неизвестный type: ${JSON.stringify(m.type)}` }
+  if (m.type !== 'fader' && m.type !== 'grab' && m.type !== 'release') {
+    return { ok: false, reason: `неизвестный type: ${JSON.stringify(m.type)}` }
+  }
   if (!isInt(m.id) || m.id < 0) return { ok: false, reason: 'id должен быть целым числом >= 0' }
+  if (m.type !== 'fader') return { ok: true, msg: { type: m.type, id: m.id } }
   if (!isInt(m.value) || m.value < FADER_MIN || m.value > FADER_MAX) {
     return { ok: false, reason: `value должен быть целым ${FADER_MIN}..${FADER_MAX}, пришло ${JSON.stringify(m.value)}` }
   }

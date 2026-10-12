@@ -5,7 +5,7 @@ import { StatusPanel } from './components/StatusPanel'
 import { useLogger } from './hooks/useLogger'
 import { useWebSocket } from './hooks/useWebSocket'
 import { FADER_MAX, clampFader, makeFaderMessage } from './lib/protocol'
-import type { FaderSource, ServerMessage } from './lib/protocol'
+import type { FaderSource, LockOwner, ServerMessage } from './lib/protocol'
 import './App.css'
 
 interface Settings {
@@ -69,30 +69,74 @@ function describeChange(c: LastChange): string {
   return c.by !== undefined ? `другой интерфейс (клиент #${c.by})` : 'другой интерфейс'
 }
 
+function describeOwner(owner: Exclude<LockOwner, null>): string {
+  return owner === 'hw' ? 'физический фейдер' : `другой интерфейс (клиент #${owner})`
+}
+
 export default function App() {
   const { entries, log, clear } = useLogger()
   const [myClientId, setMyClientId] = useState<number | null>(null)
   const [lastChange, setLastChange] = useState<LastChange | null>(null)
+  /** Кто сейчас управляет выбранным фейдером (захват на сервере). */
+  const [owner, setOwner] = useState<LockOwner>(null)
   /** Пока пользователь держит ручку, значения с сервера её не двигают — иначе она прыгает под пальцем. */
   const draggingRef = useRef(false)
-  // объявлен до useWebSocket, а заполняется ниже — в обработчике нужны refs троттлинга
+  // refs объявлены до useWebSocket — они нужны обработчику входящих сообщений
   const lastSentValueRef = useRef<number | null>(null)
   const settingsRef = useRef<Settings | null>(null)
+  const myClientIdRef = useRef<number | null>(null)
+  /** Захваты всех фейдеров — чтобы при смене «ID фейдера» сразу знать, занят ли он. */
+  const locksRef = useRef(new Map<number, Exclude<LockOwner, null>>())
+  const pendingRef = useRef<number | null>(null)
+  const timerRef = useRef<number | null>(null)
+  const wsSendRef = useRef<((payload: unknown) => boolean) | null>(null)
 
-  const handleServerMessage = useCallback((msg: ServerMessage) => {
-    if (msg.type === 'hello') {
-      setMyClientId(msg.clientId)
-      return
-    }
-    if (msg.id !== settingsRef.current?.faderId) return
+  /** Отменить отложенную (троттлинг) отправку. */
+  const cancelPending = useCallback(() => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current)
+    timerRef.current = null
+    pendingRef.current = null
+  }, [])
+
+  const handleServerMessage = useCallback(
+    (msg: ServerMessage) => {
+      if (msg.type === 'hello') {
+        setMyClientId(msg.clientId)
+        myClientIdRef.current = msg.clientId
+        locksRef.current.clear()
+        setOwner(null)
+        return
+      }
+      if (msg.type === 'lock') {
+        if (msg.owner === null) locksRef.current.delete(msg.id)
+        else locksRef.current.set(msg.id, msg.owner)
+        if (msg.id !== settingsRef.current?.faderId) return
+        setOwner(msg.owner)
+        const me = myClientIdRef.current
+        if (msg.owner !== null && msg.owner !== me && draggingRef.current) {
+          // кто-то взял фейдер раньше нас (или двинули железо) — бросаем ручку, следом придёт state с его значением
+          draggingRef.current = false
+          cancelPending()
+          log('warn', `Фейдер занят: ${describeOwner(msg.owner)} — движение прервано`)
+        }
+        if (msg.owner === me && msg.held && !draggingRef.current) {
+          // захват пришёл, когда ручку уже отпустили или движение прервали — отдаём фейдер обратно
+          wsSendRef.current?.({ type: 'release', id: msg.id })
+        }
+        return
+      }
+      if (msg.id !== settingsRef.current?.faderId) return
     if (draggingRef.current) return
     setValue(msg.value)
     // чтобы следующее движение ручкой не посчиталось «тем же значением» и ушло на сервер
     lastSentValueRef.current = msg.value
-    setLastChange({ source: msg.source, by: msg.by })
-  }, [])
+      setLastChange({ source: msg.source, by: msg.by })
+    },
+    [log, cancelPending],
+  )
 
   const ws = useWebSocket(log, handleServerMessage)
+  wsSendRef.current = ws.send
 
   const [settings, setSettings] = useState<Settings>(loadSettings)
   const [value, setValue] = useState(0)
@@ -106,8 +150,6 @@ export default function App() {
   // refs для троттлинга — чтобы не зависеть от перерисовок
   const seqRef = useRef(0)
   const lastSendTimeRef = useRef(0)
-  const pendingRef = useRef<number | null>(null)
-  const timerRef = useRef<number | null>(null)
   const sendTimesRef = useRef<number[]>([])
 
   useEffect(() => {
@@ -177,6 +219,8 @@ export default function App() {
     if (timerRef.current !== null) clearTimeout(timerRef.current)
   }, [])
 
+  const lockedByOther = owner !== null && owner !== myClientId
+
   const handleChange = (v: number) => {
     setValue(v)
     setLastChange({ source: 'me' })
@@ -184,16 +228,24 @@ export default function App() {
   }
 
   const setExact = (v: number) => {
+    if (lockedByOther) return
     const c = clampFader(v)
     setValue(c)
     setLastChange({ source: 'me' })
     sendValue(c, true)
   }
 
-  // после отключения номер клиента и «кто двигал» больше не актуальны
+  // переключили «ID фейдера» — показать, занят ли он
+  useEffect(() => {
+    setOwner(locksRef.current.get(settings.faderId) ?? null)
+  }, [settings.faderId])
+
+  // после отключения номер клиента, захват и «кто двигал» больше не актуальны
   useEffect(() => {
     if (ws.status !== 'connected') {
       setMyClientId(null)
+      myClientIdRef.current = null
+      setOwner(null)
       setLastChange(null)
     }
   }, [ws.status])
@@ -242,16 +294,25 @@ export default function App() {
           <Fader
             label={`Фейдер #${settings.faderId}`}
             value={value}
+            disabled={lockedByOther}
             onChange={handleChange}
             onGrab={() => {
               draggingRef.current = true
+              // без соединения захватывать нечего — не шумим в логе «НЕ отправлено»
+              if (isConnected) ws.send({ type: 'grab', id: settings.faderId })
             }}
             onRelease={(v) => {
+              // последнее значение должно уйти до release, иначе оно опоздает и отбросится как «не по захвату»
+              const p = pendingRef.current
+              cancelPending()
+              if (p !== null) sendValue(p)
               draggingRef.current = false
+              if (isConnected) ws.send({ type: 'release', id: settings.faderId })
               log('info', `Фейдер отпущен на ${v}`)
             }}
           />
           {!isConnected && <p className="hint">Нет соединения — значения не отправляются (видно в логах)</p>}
+          {isConnected && lockedByOther && <p className="hint">Сейчас управляет: {describeOwner(owner)}</p>}
           {isConnected && (
             <p className="muted small">
               {lastChange ? `Последним двигал: ${describeChange(lastChange)}` : 'Фейдер ещё никто не двигал'}
@@ -274,9 +335,9 @@ export default function App() {
           <section className="panel controls">
             <h2>Тестовые действия</h2>
             <div className="row">
-              <button onClick={() => setExact(0)}>0</button>
-              <button onClick={() => setExact(64)}>64</button>
-              <button onClick={() => setExact(FADER_MAX)}>127</button>
+              <button disabled={lockedByOther} onClick={() => setExact(0)}>0</button>
+              <button disabled={lockedByOther} onClick={() => setExact(64)}>64</button>
+              <button disabled={lockedByOther} onClick={() => setExact(FADER_MAX)}>127</button>
               <input
                 type="number"
                 min={0}
@@ -285,8 +346,8 @@ export default function App() {
                 onChange={(e) => setManual(e.target.value)}
                 className="num"
               />
-              <button onClick={() => setExact(Number(manual) || 0)}>Отправить</button>
-              <button onClick={() => sendValue(value, true)} title="Повторно отправить текущее значение">
+              <button disabled={lockedByOther} onClick={() => setExact(Number(manual) || 0)}>Отправить</button>
+              <button disabled={lockedByOther} onClick={() => sendValue(value, true)} title="Повторно отправить текущее значение">
                 Повторить
               </button>
             </div>

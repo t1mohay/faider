@@ -129,6 +129,7 @@ input:disabled { opacity: .6; }
 }
 .fader__track:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .fader__track.is-dragging .fader__knob { border-color: var(--accent); }
+.fader.is-locked .fader__track { opacity: .45; cursor: not-allowed; }
 
 /* ---------- Статус ---------- */
 .status__conn { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 12px; }

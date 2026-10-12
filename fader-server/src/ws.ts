@@ -3,7 +3,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { config } from './config.js'
 import { bar, log } from './logger.js'
 import { parseMessage } from './protocol.js'
-import type { FaderSource, ServerMessage } from './protocol.js'
+import type { FaderSource, LockOwner, ServerMessage } from './protocol.js'
 import { pushHistory, state } from './state.js'
 import type { ClientInfo } from './state.js'
 
@@ -16,8 +16,10 @@ function send(ws: WebSocket, client: ClientInfo, msg: ServerMessage) {
     if (ws.readyState !== WebSocket.OPEN) return
     const text = JSON.stringify(msg)
     ws.send(text)
-    // рассылку state логирует setFader одной строкой, а не по строке на клиента
-    if (msg.type !== 'state' && (config.logEach || msg.type !== 'ack')) log.sent(`→ client#${client.id} ${text}`)
+    // рассылку state и lock логируют setFader и setLock одной строкой, а не по строке на клиента
+    if (msg.type !== 'state' && msg.type !== 'lock' && (config.logEach || msg.type !== 'ack')) {
+      log.sent(`→ client#${client.id} ${text}`)
+    }
   }
   if (config.latencyMs > 0) setTimeout(doSend, config.latencyMs)
   else doSend()
@@ -28,6 +30,8 @@ function send(ws: WebSocket, client: ClientInfo, msg: ServerMessage) {
  * Через это идут и изменения из интерфейсов, и движения физического фейдера.
  */
 export function setFader(id: number, value: number, source: FaderSource, by?: number, except?: WebSocket) {
+  // физический фейдер главнее интерфейсов: забирает захват, даже если ручку кто-то держит
+  if (source === 'hw') setLock(id, 'hw', false)
   const now = Date.now()
   state.faders.set(id, { id, value, updatedAt: now, source, by })
   const msg: ServerMessage = { type: 'state', id, value, source, by, serverTs: now }
@@ -38,6 +42,49 @@ export function setFader(id: number, value: number, source: FaderSource, by?: nu
     n++
   }
   if (config.logEach && n > 0) log.sent(`→ всем (${n}) ${JSON.stringify(msg)}`)
+}
+
+/** Таймеры коротких захватов (held = false). */
+const lockTimers = new Map<number, NodeJS.Timeout>()
+
+function describeOwner(owner: LockOwner): string {
+  if (owner === null) return 'свободен'
+  return owner === 'hw' ? 'физический фейдер' : `client#${owner}`
+}
+
+/**
+ * Захват фейдера: пока он занят, изменения от остальных клиентов отклоняются.
+ * held = false — короткий захват, сам снимется через LOCK_MS после последнего вызова.
+ */
+function setLock(id: number, owner: LockOwner, held: boolean) {
+  clearTimeout(lockTimers.get(id))
+  lockTimers.delete(id)
+  const prev = state.locks.get(id)
+  if (owner === null) state.locks.delete(id)
+  else {
+    state.locks.set(id, { id, owner, held })
+    if (!held) lockTimers.set(id, setTimeout(() => setLock(id, null, false), config.lockMs))
+  }
+  // продление короткого захвата тем же владельцем — не новость, не рассылаем
+  const same = owner === null ? !prev : prev?.owner === owner && prev.held === held
+  if (same) return
+  for (const [ws, client] of sockets) send(ws, client, { type: 'lock', id, owner, held })
+  log.info(`fader#${id}: ${owner === null ? 'освобождён' : `захвачен — ${describeOwner(owner)}${held ? '' : ' (коротко)'}`}`)
+}
+
+/** Свободен ли фейдер для клиента: никем не занят или занят им самим. */
+function canControl(id: number, client: ClientInfo): boolean {
+  const owner = state.locks.get(id)?.owner
+  return owner === undefined || owner === client.id
+}
+
+/** Отказ: сообщить клиенту, кто держит фейдер, и вернуть его ручку в текущее положение. */
+function deny(ws: WebSocket, client: ClientInfo, id: number, what: string) {
+  const lock = state.locks.get(id)!
+  log.warn(`client#${client.id}: ${what} fader#${id} отклонено — занят (${describeOwner(lock.owner)})`)
+  send(ws, client, { type: 'lock', id, owner: lock.owner, held: lock.held })
+  const f = state.faders.get(id)
+  if (f) send(ws, client, { type: 'state', id, value: f.value, source: f.source, by: f.by, serverTs: Date.now() })
 }
 
 /** Проверка seq: ловим пропуски, дубли и перестановки внутри одного соединения. */
@@ -79,6 +126,7 @@ export function attachWebSocket(server: Server) {
       connectedAt: Date.now(),
       received: 0,
       invalid: 0,
+      rejected: 0,
       lastSeq: null,
       lost: 0,
     }
@@ -97,6 +145,7 @@ export function attachWebSocket(server: Server) {
     for (const f of state.faders.values()) {
       send(ws, client, { type: 'state', id: f.id, value: f.value, source: f.source, by: f.by, serverTs: Date.now() })
     }
+    for (const l of state.locks.values()) send(ws, client, { type: 'lock', id: l.id, owner: l.owner, held: l.held })
 
     ws.on('message', (data, isBinary) => {
       const raw = isBinary ? `[binary ${(data as Buffer).length} bytes]` : data.toString()
@@ -111,6 +160,16 @@ export function attachWebSocket(server: Server) {
       }
 
       const m = parsed.msg
+      if (m.type === 'grab') {
+        if (canControl(m.id, client)) setLock(m.id, client.id, true)
+        else deny(ws, client, m.id, 'захват')
+        return
+      }
+      if (m.type === 'release') {
+        if (state.locks.get(m.id)?.owner === client.id) setLock(m.id, null, false)
+        return
+      }
+
       const now = Date.now()
       client.received++
       state.totals.received++
@@ -125,6 +184,14 @@ export function attachWebSocket(server: Server) {
         )
       }
 
+      if (!canControl(m.id, client)) {
+        client.rejected++
+        deny(ws, client, m.id, `значение ${m.value} для`)
+        return
+      }
+      // кнопки и клавиатура двигают фейдер без grab — занимаем его коротко, чтобы и тут не было гонки
+      if (!state.locks.get(m.id)?.held) setLock(m.id, client.id, false)
+
       if (config.ack) {
         send(ws, client, { type: 'ack', id: m.id, value: m.value, seq: m.seq, serverTs: now, deltaMs: now - m.ts })
       }
@@ -134,9 +201,11 @@ export function attachWebSocket(server: Server) {
     ws.on('close', (code, reason) => {
       state.clients.delete(client.id)
       sockets.delete(ws)
+      // ручку не отпустили, а соединение пропало — освобождаем, иначе фейдер останется занятым навсегда
+      for (const l of [...state.locks.values()]) if (l.owner === client.id) setLock(l.id, null, false)
       log.info(
         `client#${client.id} отключился: код ${code}${reason.length ? `, ${reason.toString()}` : ''}. ` +
-          `Принято ${client.received}, ошибок ${client.invalid}, потеряно ${client.lost}`,
+          `Принято ${client.received}, ошибок ${client.invalid}, отклонено ${client.rejected}, потеряно ${client.lost}`,
       )
     })
 

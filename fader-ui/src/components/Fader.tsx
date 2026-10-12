@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent, PointerEvent } from 'react'
 import { FADER_MAX, FADER_MIN, clampFader, faderToPercent } from '../lib/protocol'
 
@@ -10,6 +10,8 @@ interface FaderProps {
   /** Вызывается, когда пользователь отпустил ручку. */
   onRelease?: (value: number) => void
   label?: string
+  /** Фейдер занят другим — ручка не реагирует, а начатое движение прерывается. */
+  disabled?: boolean
 }
 
 /** Деления шкалы в процентах. */
@@ -19,9 +21,14 @@ const TICKS = [0, 25, 50, 75, 100]
  * Вертикальный фейдер на pointer events: работает мышью, пальцем и с клавиатуры.
  * Сделан руками, а не через повёрнутый <input type="range">, — так стабильнее на тачскринах.
  */
-export function Fader({ value, onChange, onGrab, onRelease, label }: FaderProps) {
+export function Fader({ value, onChange, onGrab, onRelease, label, disabled = false }: FaderProps) {
   const trackRef = useRef<HTMLDivElement>(null)
   const [dragging, setDragging] = useState(false)
+
+  // фейдер забрали прямо во время движения (кто-то успел раньше или двинули железо) — бросаем ручку
+  useEffect(() => {
+    if (disabled) setDragging(false)
+  }, [disabled])
 
   const valueFromPointer = useCallback((clientY: number) => {
     const rect = trackRef.current!.getBoundingClientRect()
@@ -30,6 +37,7 @@ export function Fader({ value, onChange, onGrab, onRelease, label }: FaderProps)
   }, [])
 
   const handlePointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    if (disabled) return
     e.currentTarget.setPointerCapture(e.pointerId)
     e.currentTarget.focus()
     setDragging(true)
@@ -50,6 +58,7 @@ export function Fader({ value, onChange, onGrab, onRelease, label }: FaderProps)
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return
     const steps: Record<string, number> = {
       ArrowUp: 1,
       ArrowRight: 1,
@@ -70,7 +79,7 @@ export function Fader({ value, onChange, onGrab, onRelease, label }: FaderProps)
   const percent = ((value - FADER_MIN) / (FADER_MAX - FADER_MIN)) * 100
 
   return (
-    <div className="fader">
+    <div className={`fader${disabled ? ' is-locked' : ''}`}>
       {label && <div className="fader__label">{label}</div>}
       <div className="fader__value">
         {faderToPercent(value)}%
@@ -95,6 +104,7 @@ export function Fader({ value, onChange, onGrab, onRelease, label }: FaderProps)
           aria-valuemax={FADER_MAX}
           aria-valuenow={value}
           aria-valuetext={`${faderToPercent(value)}%`}
+          aria-disabled={disabled}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}

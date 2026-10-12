@@ -1,5 +1,5 @@
 import { config } from './config.js'
-import type { FaderMessage, FaderSource } from './protocol.js'
+import type { FaderMessage, FaderSource, LockOwner } from './protocol.js'
 
 /** Всё состояние сервера хранится в памяти — для прототипа этого достаточно. */
 
@@ -13,6 +13,14 @@ export interface FaderState {
   by?: number
 }
 
+/** Захват фейдера: кто им сейчас управляет. Свободный фейдер в карте не хранится. */
+export interface FaderLock {
+  id: number
+  owner: Exclude<LockOwner, null>
+  /** true — держат ручку (до release), false — короткий захват на LOCK_MS. */
+  held: boolean
+}
+
 export interface HistoryItem extends FaderMessage {
   clientId: number
   receivedAt: number
@@ -24,6 +32,8 @@ export interface ClientInfo {
   connectedAt: number
   received: number
   invalid: number
+  /** Изменения, отклонённые из-за того, что фейдер был занят другим. */
+  rejected: number
   lastSeq: number | null
   lost: number
 }
@@ -31,6 +41,7 @@ export interface ClientInfo {
 export const state = {
   startedAt: Date.now(),
   faders: new Map<number, FaderState>(),
+  locks: new Map<number, FaderLock>(),
   history: [] as HistoryItem[],
   clients: new Map<number, ClientInfo>(),
   totals: { received: 0, invalid: 0, lost: 0, connections: 0 },
@@ -48,6 +59,7 @@ export function resetState() {
   for (const c of state.clients.values()) {
     c.received = 0
     c.invalid = 0
+    c.rejected = 0
     c.lost = 0
     c.lastSeq = null
   }
@@ -60,6 +72,7 @@ export function snapshot() {
     config,
     totals: state.totals,
     faders: [...state.faders.values()],
+    locks: [...state.locks.values()],
     clients: [...state.clients.values()],
   }
 }
