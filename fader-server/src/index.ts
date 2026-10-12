@@ -1,17 +1,36 @@
 import { createServer } from 'node:http'
 import { networkInterfaces } from 'node:os'
 import { config } from './config.js'
+import { HwManager } from './hw/manager.js'
+import { serialTransport } from './hw/serial.js'
+import { simTransport } from './hw/sim.js'
+import { usbMidiTransport } from './hw/usbmidi.js'
 import { createApp } from './http.js'
 import { log } from './logger.js'
-import { startHwSim } from './sim.js'
 import { state } from './state.js'
-import { attachWebSocket } from './ws.js'
+import { attachWebSocket, broadcastHwStatus, setFader, setHwTouch } from './ws.js'
+
+const hw = new HwManager(
+  [
+    serialTransport(config.hwBaud),
+    usbMidiTransport(),
+    simTransport({ everyMs: config.simHwMs, faderId: config.simHwId, channel: config.midiChannel }),
+  ],
+  {
+    onValue: (id, value) => setFader(id, value, 'hw'),
+    onTouch: setHwTouch,
+    onStatus: broadcastHwStatus,
+    currentValues: () => [...state.faders.values()].map((f) => [f.id, f.value] as [number, number]),
+  },
+  { channel: config.midiChannel },
+)
 
 const app = createApp()
 // Express и WebSocket живут на одном HTTP-сервере и одном порту
 const server = createServer(app)
-const wss = attachWebSocket(server)
-const stopSim = startHwSim()
+const wss = attachWebSocket(server, hw)
+const stopHw = hw.start()
+if (config.hwDevice) void hw.connect(config.hwDevice)
 
 /** IPv4-адреса в локальной сети — чтобы подключиться с телефона. */
 function lanAddresses(): string[] {
@@ -34,13 +53,14 @@ server.listen(config.port, config.host, () => {
   for (const ip of lanAddresses()) log.info(`В сети:     ws://${ip}:${config.port}`)
   log.info(
     `ACK=${config.ack ? 'on' : 'off'}  LATENCY_MS=${config.latencyMs}  LOG_EACH=${config.logEach ? 'on' : 'off'}  ` +
-      `SIM_HW_MS=${config.simHwMs}`,
+      `LOCK_MS=${config.lockMs}  MIDI_CHANNEL=${config.midiChannel}  HW_BAUD=${config.hwBaud}  ` +
+      `HW_DEVICE=${config.hwDevice || '—'}`,
   )
 })
 
 function shutdown() {
   log.info(`Остановка… Всего принято ${state.totals.received}, ошибок ${state.totals.invalid}`)
-  stopSim()
+  stopHw()
   for (const ws of wss.clients) ws.close(1001, 'server shutdown')
   wss.close()
   server.close(() => process.exit(0))

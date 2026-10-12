@@ -4,10 +4,13 @@ import { config } from './config.js'
 import { bar, log } from './logger.js'
 import { parseMessage } from './protocol.js'
 import type { FaderSource, LockOwner, ServerMessage } from './protocol.js'
+import type { HwManager, HwStatus } from './hw/manager.js'
 import { pushHistory, state } from './state.js'
 import type { ClientInfo } from './state.js'
 
 let nextClientId = 1
+/** Подключённое железо — задаётся в attachWebSocket. */
+let hw: HwManager | null = null
 /** Открытые соединения — для рассылки state всем клиентам. */
 const sockets = new Map<WebSocket, ClientInfo>()
 
@@ -16,8 +19,9 @@ function send(ws: WebSocket, client: ClientInfo, msg: ServerMessage) {
     if (ws.readyState !== WebSocket.OPEN) return
     const text = JSON.stringify(msg)
     ws.send(text)
-    // рассылку state и lock логируют setFader и setLock одной строкой, а не по строке на клиента
-    if (msg.type !== 'state' && msg.type !== 'lock' && (config.logEach || msg.type !== 'ack')) {
+    // рассылки (state, lock, hw-status) логируются один раз в месте рассылки, а не по строке на клиента
+    const broadcast = msg.type === 'state' || msg.type === 'lock' || msg.type === 'hw-status'
+    if (!broadcast && (config.logEach || msg.type !== 'ack')) {
       log.sent(`→ client#${client.id} ${text}`)
     }
   }
@@ -28,10 +32,14 @@ function send(ws: WebSocket, client: ClientInfo, msg: ServerMessage) {
 /**
  * Новое положение фейдера: сохранить и разослать всем клиентам, кроме автора (он и так знает, у него ack).
  * Через это идут и изменения из интерфейсов, и движения физического фейдера.
+ * Изменения из интерфейсов уходят и на железо — мотор двигает ручку.
  */
 export function setFader(id: number, value: number, source: FaderSource, by?: number, except?: WebSocket) {
-  // физический фейдер главнее интерфейсов: забирает захват, даже если ручку кто-то держит
-  if (source === 'hw') setLock(id, 'hw', false)
+  // физический фейдер главнее интерфейсов: забирает захват, даже если ручку кто-то держит;
+  // если его держат рукой (датчик касания) — захват уже долгий, не превращаем его в короткий
+  const lock = state.locks.get(id)
+  if (source === 'hw' && !(lock?.owner === 'hw' && lock.held)) setLock(id, 'hw', false)
+  else if (source !== 'hw') hw?.sendFader(id, value)
   const now = Date.now()
   state.faders.set(id, { id, value, updatedAt: now, source, by })
   const msg: ServerMessage = { type: 'state', id, value, source, by, serverTs: now }
@@ -56,7 +64,7 @@ function describeOwner(owner: LockOwner): string {
  * Захват фейдера: пока он занят, изменения от остальных клиентов отклоняются.
  * held = false — короткий захват, сам снимется через LOCK_MS после последнего вызова.
  */
-function setLock(id: number, owner: LockOwner, held: boolean) {
+export function setLock(id: number, owner: LockOwner, held: boolean) {
   clearTimeout(lockTimers.get(id))
   lockTimers.delete(id)
   const prev = state.locks.get(id)
@@ -70,6 +78,18 @@ function setLock(id: number, owner: LockOwner, held: boolean) {
   if (same) return
   for (const [ws, client] of sockets) send(ws, client, { type: 'lock', id, owner, held })
   log.info(`fader#${id}: ${owner === null ? 'освобождён' : `захвачен — ${describeOwner(owner)}${held ? '' : ' (коротко)'}`}`)
+}
+
+/** Физический фейдер взяли рукой или отпустили (Note On/Off с платы). */
+export function setHwTouch(id: number, touched: boolean) {
+  if (touched) setLock(id, 'hw', true)
+  else if (state.locks.get(id)?.owner === 'hw') setLock(id, null, false)
+}
+
+/** Разослать всем состояние железа (список устройств, что подключено). */
+export function broadcastHwStatus(status: HwStatus) {
+  for (const [ws, client] of sockets) send(ws, client, { type: 'hw-status', ...status })
+  log.info(`Железо: ${status.state}${status.selected ? ` (${status.selected})` : ''}, устройств: ${status.devices.length}`)
 }
 
 /** Свободен ли фейдер для клиента: никем не занят или занят им самим. */
@@ -106,7 +126,8 @@ function checkSeq(client: ClientInfo, seq: number) {
   }
 }
 
-export function attachWebSocket(server: Server) {
+export function attachWebSocket(server: Server, hwManager: HwManager) {
+  hw = hwManager
   const wss = new WebSocketServer({ server })
 
   // Сводка раз в секунду — когда LOG_EACH=0 и сообщений слишком много для построчного лога
@@ -146,6 +167,7 @@ export function attachWebSocket(server: Server) {
       send(ws, client, { type: 'state', id: f.id, value: f.value, source: f.source, by: f.by, serverTs: Date.now() })
     }
     for (const l of state.locks.values()) send(ws, client, { type: 'lock', id: l.id, owner: l.owner, held: l.held })
+    send(ws, client, { type: 'hw-status', ...hwManager.status() })
 
     ws.on('message', (data, isBinary) => {
       const raw = isBinary ? `[binary ${(data as Buffer).length} bytes]` : data.toString()
@@ -160,6 +182,21 @@ export function attachWebSocket(server: Server) {
       }
 
       const m = parsed.msg
+      if (m.type === 'hw-list') {
+        // список мог не измениться — тогда рассылки не будет, а ответ клиенту нужен
+        void hwManager.refresh(true).then(() => send(ws, client, { type: 'hw-status', ...hwManager.status() }))
+        return
+      }
+      if (m.type === 'hw-connect') {
+        log.info(`client#${client.id}: подключить устройство ${m.device}`)
+        void hwManager.connect(m.device)
+        return
+      }
+      if (m.type === 'hw-disconnect') {
+        log.info(`client#${client.id}: отключить устройство`)
+        void hwManager.disconnect()
+        return
+      }
       if (m.type === 'grab') {
         if (canControl(m.id, client)) setLock(m.id, client.id, true)
         else deny(ws, client, m.id, 'захват')

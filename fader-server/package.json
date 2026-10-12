@@ -9,10 +9,13 @@
     "start": "tsx src/index.ts",
     "build": "tsc",
     "start:prod": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
+    "@julusian/midi": "^3.8.1",
     "express": "^5.1.0",
+    "serialport": "^13.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

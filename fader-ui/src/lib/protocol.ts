@@ -69,8 +69,50 @@ export interface LockMessage {
   held: boolean
 }
 
+/** Физическое устройство на сервере: COM-порт, USB-MIDI или имитация. */
+export interface HwDevice {
+  /** 'serial:COM3', 'midi:Arduino Leonardo', 'sim' — его и шлём в hw-connect. */
+  id: string
+  kind: 'serial' | 'midi' | 'sim'
+  name: string
+  detail?: string
+}
+
+/**
+ * disconnected — ничего не выбрано; connecting — открывается; connected — работает;
+ * waiting — выбранного устройства нет (выдернули), сервер подключится сам, когда появится;
+ * error — открыть не вышло (порт занят), сервер пробует снова.
+ */
+export type HwState = 'disconnected' | 'connecting' | 'connected' | 'waiting' | 'error'
+
+/** Сервер -> клиент: устройства и что подключено (одно на весь сервер). */
+export interface HwStatusMessage {
+  type: 'hw-status'
+  devices: HwDevice[]
+  selected: string | null
+  state: HwState
+  error?: string
+}
+
 /** Входящие сообщения, на которые интерфейс реагирует. ack и error пока только пишутся в лог. */
-export type ServerMessage = HelloMessage | StateMessage | LockMessage
+export type ServerMessage = HelloMessage | StateMessage | LockMessage | HwStatusMessage
+
+const HW_STATES: HwState[] = ['disconnected', 'connecting', 'connected', 'waiting', 'error']
+const HW_KINDS: HwDevice['kind'][] = ['serial', 'midi', 'sim']
+
+function parseHwDevice(v: unknown): HwDevice | null {
+  if (typeof v !== 'object' || v === null) return null
+  const d = v as Record<string, unknown>
+  if (typeof d.id !== 'string' || typeof d.name !== 'string' || !HW_KINDS.includes(d.kind as HwDevice['kind'])) {
+    return null
+  }
+  return {
+    id: d.id,
+    kind: d.kind as HwDevice['kind'],
+    name: d.name,
+    detail: typeof d.detail === 'string' ? d.detail : undefined,
+  }
+}
 
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v)
 
@@ -101,6 +143,15 @@ export function parseServerMessage(raw: string): ServerMessage | null {
     typeof m.held === 'boolean'
   ) {
     return { type: 'lock', id: m.id, owner: m.owner, held: m.held }
+  }
+  if (m.type === 'hw-status' && Array.isArray(m.devices) && HW_STATES.includes(m.state as HwState)) {
+    return {
+      type: 'hw-status',
+      devices: m.devices.map(parseHwDevice).filter((d): d is HwDevice => d !== null),
+      selected: typeof m.selected === 'string' ? m.selected : null,
+      state: m.state as HwState,
+      error: typeof m.error === 'string' ? m.error : undefined,
+    }
   }
   return null
 }

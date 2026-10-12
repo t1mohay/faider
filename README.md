@@ -3,7 +3,8 @@
 ```
 fader-project/
   fader-ui/       интерфейс с фейдером (TypeScript + React + Vite)
-  fader-server/   тестовый сервер (Node.js + TypeScript + Express + ws)
+  fader-server/   тестовый сервер (Node.js + TypeScript + Express + ws), работает с платой по USB
+  firmware/       тестовая прошивка для Arduino / ESP32
   scripts/dev.mjs запуск обоих одной командой
 ```
 
@@ -27,6 +28,8 @@ Node.js версии 20 или новее: https://nodejs.org (LTS). Прове�
 
 Остановить — **Ctrl+C** в терминале.
 
+Плата с фейдером (Arduino / ESP32) подключается по USB к этому же компьютеру и выбирается в интерфейсе, в панели «Устройство». Прошивка и проверка — в `firmware/README.md`. Без платы можно выбрать «Имитация».
+
 Логи сервера и интерфейса идут в один терминал с метками `[server]` и `[ui]`.
 Страница статуса сервера (значение фейдера вживую): http://localhost:8765
 
@@ -38,6 +41,7 @@ Node.js версии 20 или новее: https://nodejs.org (LTS). Прове�
 | `npm run dev:server` | только сервер                        |
 | `npm run dev:ui`     | только интерфейс                     |
 | `npm run typecheck`  | проверка типов в обоих проектах      |
+| `npm test`           | тесты сервера (разбор MIDI, работа с устройством) |
 
 В VS Code то же есть через **Terminal → Run Task…** («Установить зависимости», «Запустить всё»).
 

@@ -1,8 +1,10 @@
 /**
  * Формат сообщений — зеркало фронтового src/lib/protocol.ts.
- * Клиент -> сервер: FaderMessage | GrabMessage | ReleaseMessage
- * Сервер -> клиент: HelloMessage | AckMessage | StateMessage | LockMessage | ErrorMessage
+ * Клиент -> сервер: FaderMessage | GrabMessage | ReleaseMessage | HwListMessage | HwConnectMessage | HwDisconnectMessage
+ * Сервер -> клиент: HelloMessage | AckMessage | StateMessage | LockMessage | HwStatusMessage | ErrorMessage
  */
+
+import type { HwStatus } from './hw/manager.js'
 
 export const FADER_MIN = 0
 export const FADER_MAX = 127
@@ -27,7 +29,28 @@ export interface ReleaseMessage {
   id: number
 }
 
-export type ClientMessage = FaderMessage | GrabMessage | ReleaseMessage
+/** Обновить список устройств (COM-порты, USB-MIDI, имитация). Ответ — hw-status. */
+export interface HwListMessage {
+  type: 'hw-list'
+}
+
+/** Подключить устройство по id из списка ('serial:COM3', 'midi:Arduino Leonardo', 'sim'). Одно на весь сервер. */
+export interface HwConnectMessage {
+  type: 'hw-connect'
+  device: string
+}
+
+export interface HwDisconnectMessage {
+  type: 'hw-disconnect'
+}
+
+export type ClientMessage =
+  | FaderMessage
+  | GrabMessage
+  | ReleaseMessage
+  | HwListMessage
+  | HwConnectMessage
+  | HwDisconnectMessage
 
 export interface HelloMessage {
   type: 'hello'
@@ -83,7 +106,10 @@ export interface ErrorMessage {
   raw?: string
 }
 
-export type ServerMessage = HelloMessage | AckMessage | StateMessage | LockMessage | ErrorMessage
+/** Устройства и что подключено. Рассылается всем при каждом изменении; новому клиенту — сразу после hello. */
+export type HwStatusMessage = { type: 'hw-status' } & HwStatus
+
+export type ServerMessage = HelloMessage | AckMessage | StateMessage | LockMessage | HwStatusMessage | ErrorMessage
 
 export type ParseResult = { ok: true; msg: ClientMessage } | { ok: false; reason: string }
 
@@ -101,6 +127,11 @@ export function parseMessage(raw: string): ParseResult {
     return { ok: false, reason: 'ожидался JSON-объект' }
   }
   const m = data as Record<string, unknown>
+  if (m.type === 'hw-list' || m.type === 'hw-disconnect') return { ok: true, msg: { type: m.type } }
+  if (m.type === 'hw-connect') {
+    if (typeof m.device !== 'string' || m.device === '') return { ok: false, reason: 'device должен быть непустой строкой' }
+    return { ok: true, msg: { type: 'hw-connect', device: m.device } }
+  }
   if (m.type !== 'fader' && m.type !== 'grab' && m.type !== 'release') {
     return { ok: false, reason: `неизвестный type: ${JSON.stringify(m.type)}` }
   }

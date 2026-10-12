@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { DevicePanel } from './components/DevicePanel'
 import { Fader } from './components/Fader'
 import { LogPanel } from './components/LogPanel'
 import { StatusPanel } from './components/StatusPanel'
 import { useLogger } from './hooks/useLogger'
 import { useWebSocket } from './hooks/useWebSocket'
 import { FADER_MAX, clampFader, makeFaderMessage } from './lib/protocol'
-import type { FaderSource, LockOwner, ServerMessage } from './lib/protocol'
+import type { FaderSource, HwStatusMessage, LockOwner, ServerMessage } from './lib/protocol'
 import './App.css'
 
 interface Settings {
@@ -79,6 +80,8 @@ export default function App() {
   const [lastChange, setLastChange] = useState<LastChange | null>(null)
   /** Кто сейчас управляет выбранным фейдером (захват на сервере). */
   const [owner, setOwner] = useState<LockOwner>(null)
+  /** Физическое устройство на сервере; null — пока нет соединения. */
+  const [hwStatus, setHwStatus] = useState<HwStatusMessage | null>(null)
   /** Пока пользователь держит ручку, значения с сервера её не двигают — иначе она прыгает под пальцем. */
   const draggingRef = useRef(false)
   // refs объявлены до useWebSocket — они нужны обработчику входящих сообщений
@@ -105,6 +108,10 @@ export default function App() {
         myClientIdRef.current = msg.clientId
         locksRef.current.clear()
         setOwner(null)
+        return
+      }
+      if (msg.type === 'hw-status') {
+        setHwStatus(msg)
         return
       }
       if (msg.type === 'lock') {
@@ -246,6 +253,7 @@ export default function App() {
       setMyClientId(null)
       myClientIdRef.current = null
       setOwner(null)
+      setHwStatus(null)
       setLastChange(null)
     }
   }, [ws.status])
@@ -330,6 +338,13 @@ export default function App() {
             lastSent={lastSent}
             seq={seq}
             onResetStats={resetStats}
+          />
+
+          <DevicePanel
+            status={isConnected ? hwStatus : null}
+            onRefresh={() => ws.send({ type: 'hw-list' })}
+            onConnect={(device) => ws.send({ type: 'hw-connect', device })}
+            onDisconnect={() => ws.send({ type: 'hw-disconnect' })}
           />
 
           <section className="panel controls">
