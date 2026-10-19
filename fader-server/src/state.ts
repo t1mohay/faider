@@ -74,5 +74,19 @@ export function snapshot() {
     faders: [...state.faders.values()],
     locks: [...state.locks.values()],
     clients: [...state.clients.values()],
+    process: processStats(),
+  }
+}
+
+/** Память и процессорное время сервера — нагрузочный тест сравнивает их до и после. */
+function processStats() {
+  const mem = process.memoryUsage()
+  const cpu = process.cpuUsage()
+  const mb = (b: number) => Math.round((b / 1024 / 1024) * 10) / 10
+  return {
+    rssMb: mb(mem.rss),
+    heapUsedMb: mb(mem.heapUsed),
+    /** Суммарное процессорное время с запуска, мс. */
+    cpuMs: Math.round((cpu.user + cpu.system) / 1000),
   }
 }

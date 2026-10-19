@@ -10,7 +10,8 @@
     "build": "tsc",
     "start:prod": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test \"src/**/*.test.ts\""
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "load": "tsx src/load-test.ts"
   },
   "dependencies": {
     "@julusian/midi": "^3.8.1",

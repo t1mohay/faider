@@ -10,7 +10,8 @@
     "dev:server": "npm run dev --prefix fader-server",
     "dev:ui": "npm run dev --prefix fader-ui",
     "typecheck": "npm run typecheck --prefix fader-server && npm run typecheck --prefix fader-ui",
-    "test": "npm test --prefix fader-server"
+    "test": "npm test --prefix fader-server",
+    "load": "npm run load --prefix fader-server --"
   },
   "engines": {
     "node": ">=20"

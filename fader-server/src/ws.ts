@@ -14,10 +14,10 @@ let hw: HwManager | null = null
 /** Открытые соединения — для рассылки state всем клиентам. */
 const sockets = new Map<WebSocket, ClientInfo>()
 
-function send(ws: WebSocket, client: ClientInfo, msg: ServerMessage) {
+/** text можно передать готовым — при рассылке сообщение сериализуется один раз на всех, а не на каждого клиента. */
+function send(ws: WebSocket, client: ClientInfo, msg: ServerMessage, text = JSON.stringify(msg)) {
   const doSend = () => {
     if (ws.readyState !== WebSocket.OPEN) return
-    const text = JSON.stringify(msg)
     ws.send(text)
     // рассылки (state, lock, hw-status) логируются один раз в месте рассылки, а не по строке на клиента
     const broadcast = msg.type === 'state' || msg.type === 'lock' || msg.type === 'hw-status'
@@ -43,13 +43,14 @@ export function setFader(id: number, value: number, source: FaderSource, by?: nu
   const now = Date.now()
   state.faders.set(id, { id, value, updatedAt: now, source, by })
   const msg: ServerMessage = { type: 'state', id, value, source, by, serverTs: now }
+  const text = JSON.stringify(msg)
   let n = 0
   for (const [ws, client] of sockets) {
     if (ws === except) continue
-    send(ws, client, msg)
+    send(ws, client, msg, text)
     n++
   }
-  if (config.logEach && n > 0) log.sent(`→ всем (${n}) ${JSON.stringify(msg)}`)
+  if (config.logEach && n > 0) log.sent(`→ всем (${n}) ${text}`)
 }
 
 /** Таймеры коротких захватов (held = false). */
