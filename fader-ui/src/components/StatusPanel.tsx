@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
-import type { ConnStatus, WsStats } from '../hooks/useWebSocket'
+import type { ConnStatus, RetryInfo, WsStats } from '../hooks/useWebSocket'
 
 interface StatusPanelProps {
   status: ConnStatus
   stats: WsStats
   connectedAt: number | null
+  retry: RetryInfo | null
+  onRetryNow: () => void
   rate: number
   lastSent: number | null
   seq: number
@@ -15,6 +17,7 @@ const STATUS_TEXT: Record<ConnStatus, string> = {
   disconnected: 'Отключено',
   connecting: 'Подключение…',
   connected: 'Подключено',
+  reconnecting: 'Переподключение…',
   error: 'Ошибка',
 }
 
@@ -24,13 +27,27 @@ function formatUptime(ms: number): string {
   return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 
-export function StatusPanel({ status, stats, connectedAt, rate, lastSent, seq, onResetStats }: StatusPanelProps) {
+export function StatusPanel({
+  status,
+  stats,
+  connectedAt,
+  retry,
+  onRetryNow,
+  rate,
+  lastSent,
+  seq,
+  onResetStats,
+}: StatusPanelProps) {
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
-    if (!connectedAt) return
-    const t = setInterval(() => setNow(Date.now()), 1000)
+    if (!connectedAt && !retry) return
+    setNow(Date.now())
+    // обратный отсчёт до попытки — чаще, чтобы секунды не «залипали»
+    const t = setInterval(() => setNow(Date.now()), retry ? 250 : 1000)
     return () => clearInterval(t)
-  }, [connectedAt])
+  }, [connectedAt, retry])
+
+  const retryIn = retry ? Math.max(0, Math.ceil((retry.at - now) / 1000)) : 0
 
   return (
     <section className="panel status">
@@ -38,6 +55,18 @@ export function StatusPanel({ status, stats, connectedAt, rate, lastSent, seq, o
         <span className="dot" />
         {STATUS_TEXT[status]}
         {connectedAt && <span className="muted"> · {formatUptime(now - connectedAt)}</span>}
+        {retry && (
+          <span className="muted">
+            {' '}
+            · попытка {retry.attempt}
+            {retryIn > 0 && <>, через {retryIn} с</>}
+          </span>
+        )}
+        {retry && retryIn > 0 && (
+          <button type="button" className="link status__retry" onClick={onRetryNow}>
+            Сейчас
+          </button>
+        )}
       </div>
       <dl className="stats">
         <div>

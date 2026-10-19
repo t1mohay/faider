@@ -267,7 +267,9 @@ export default function App() {
   }
 
   const isConnected = ws.status === 'connected'
-  const isBusy = ws.status === 'connecting' || isConnected
+  const isReconnecting = ws.status === 'reconnecting'
+  // «занят» — есть соединение или мы его добиваемся; кнопка тогда «Отключить»
+  const isBusy = ws.status === 'connecting' || isReconnecting || isConnected
 
   return (
     <div className="app">
@@ -319,7 +321,10 @@ export default function App() {
               log('info', `Фейдер отпущен на ${v}`)
             }}
           />
-          {!isConnected && <p className="hint">Нет соединения — значения не отправляются (видно в логах)</p>}
+          {isReconnecting && <p className="hint">Связь потеряна — переподключаемся, значения пока не отправляются</p>}
+          {!isConnected && !isReconnecting && (
+            <p className="hint">Нет соединения — значения не отправляются (видно в логах)</p>
+          )}
           {isConnected && lockedByOther && <p className="hint">Сейчас управляет: {describeOwner(owner)}</p>}
           {isConnected && (
             <p className="muted small">
@@ -334,6 +339,8 @@ export default function App() {
             status={ws.status}
             stats={ws.stats}
             connectedAt={ws.connectedAt}
+            retry={ws.retry}
+            onRetryNow={ws.retryNow}
             rate={rate}
             lastSent={lastSent}
             seq={seq}
