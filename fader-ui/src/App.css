@@ -189,3 +189,11 @@ input:disabled, select:disabled { opacity: .6; }
 .log__row--warn { color: var(--warn); }
 .log__row--error { color: var(--err); }
 .log__empty { color: var(--muted); padding: 10px; }
+
+/* Открыть на телефоне: QR слева, адрес и выбор сети справа; на узком экране — друг под другом */
+.phone__body { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+.phone__qr { width: 148px; height: 148px; border-radius: 8px; background: #fff; flex-shrink: 0; }
+.phone__info { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.phone__url { font-size: 14px; word-break: break-all; user-select: all; }
+.phone__info select { width: 100%; }
+.phone__info p { margin: 0; }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { DevicePanel } from './components/DevicePanel'
+import { PhonePanel } from './components/PhonePanel'
 import { Fader } from './components/Fader'
 import { LogPanel } from './components/LogPanel'
 import { StatusPanel } from './components/StatusPanel'
@@ -353,6 +354,9 @@ export default function App() {
             onConnect={(device) => ws.send({ type: 'hw-connect', device })}
             onDisconnect={() => ws.send({ type: 'hw-disconnect' })}
           />
+
+          {/* QR нужен только на самом ПК — на телефоне страница уже открыта */}
+          {LOCAL_HOSTS.includes(location.hostname) && <PhonePanel />}
 
           <section className="panel controls">
             <h2>Тестовые действия</h2>
