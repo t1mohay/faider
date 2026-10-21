@@ -257,6 +257,7 @@ export function useWebSocket(log: Logger, onMessage?: (msg: ServerMessage) => vo
       wantedRef.current = false
       clearRetryTimer()
       if (statsTimerRef.current !== null) clearTimeout(statsTimerRef.current)
+      statsTimerRef.current = null // иначе после повторного монтирования (dev) счётчики замрут
       wsRef.current?.close(1000, 'unmount')
     },
     [clearRetryTimer],

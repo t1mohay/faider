@@ -274,6 +274,9 @@ export default function App() {
   useEffect(() => () => {
     if (timerRef.current !== null) clearTimeout(timerRef.current)
     if (frameRef.current !== null) cancelAnimationFrame(frameRef.current)
+    // обнулить: после повторного монтирования (dev) «таймер ещё идёт» заблокировал бы отправку и приём
+    timerRef.current = null
+    frameRef.current = null
   }, [])
 
   const lockedByOther = owner !== null && owner !== myClientId

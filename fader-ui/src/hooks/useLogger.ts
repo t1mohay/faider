@@ -87,12 +87,18 @@ export function useLogger() {
     setEntries([])
   }, [])
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // В dev React (StrictMode) монтирует компонент дважды: между монтированиями таймер снят,
+    // а записи (например, «Интерфейс запущен») уже лежат в буфере — выводим их заново.
+    if (bufferRef.current.length > 0 && flushTimerRef.current === null) {
+      flushTimerRef.current = window.setTimeout(flush, FLUSH_MS)
+    }
+    return () => {
       if (flushTimerRef.current !== null) clearTimeout(flushTimerRef.current)
-    },
-    [],
-  )
+      // обязательно обнулить: иначе log() считает, что таймер ещё идёт, и больше никогда не выводит
+      flushTimerRef.current = null
+    }
+  }, [flush])
 
   return { entries, log, clear, verbose, setVerbose }
 }
