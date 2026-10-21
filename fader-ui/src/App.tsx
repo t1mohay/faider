@@ -7,7 +7,8 @@ import { StatusPanel } from './components/StatusPanel'
 import { useLogger } from './hooks/useLogger'
 import { useWebSocket } from './hooks/useWebSocket'
 import { FADER_MAX, clampFader, makeFaderMessage } from './lib/protocol'
-import type { FaderSource, HwStatusMessage, LockOwner, ServerMessage } from './lib/protocol'
+import type { FaderSource, HwStatusMessage, LockOwner, ServerMessage, StateMessage } from './lib/protocol'
+import type { RttStats } from './components/StatusPanel'
 import './App.css'
 
 interface Settings {
@@ -75,8 +76,11 @@ function describeOwner(owner: Exclude<LockOwner, null>): string {
   return owner === 'hw' ? 'физический фейдер' : `другой интерфейс (клиент #${owner})`
 }
 
+/** За какое время считаем средний и максимальный отклик. */
+const RTT_WINDOW_MS = 5000
+
 export default function App() {
-  const { entries, log, clear } = useLogger()
+  const { entries, log, clear, verbose, setVerbose } = useLogger()
   const [myClientId, setMyClientId] = useState<number | null>(null)
   const [lastChange, setLastChange] = useState<LastChange | null>(null)
   /** Кто сейчас управляет выбранным фейдером (захват на сервере). */
@@ -94,6 +98,13 @@ export default function App() {
   const pendingRef = useRef<number | null>(null)
   const timerRef = useRef<number | null>(null)
   const wsSendRef = useRef<((payload: unknown) => boolean) | null>(null)
+  /** seq → когда отправили (performance.now). Ответ ack с тем же seq даёт отклик «туда-обратно». */
+  const sentAtRef = useRef(new Map<number, number>())
+  /** Замеры отклика за последние RTT_WINDOW_MS. */
+  const rttSamplesRef = useRef<{ at: number; ms: number }[]>([])
+  /** Последний пришедший state; применяется раз за кадр — промежуточные рисовать незачем. */
+  const incomingRef = useRef<StateMessage | null>(null)
+  const frameRef = useRef<number | null>(null)
 
   /** Отменить отложенную (троттлинг) отправку. */
   const cancelPending = useCallback(() => {
@@ -133,12 +144,30 @@ export default function App() {
         }
         return
       }
+      if (msg.type === 'ack') {
+        const sentAt = sentAtRef.current.get(msg.seq)
+        if (sentAt === undefined) return
+        sentAtRef.current.delete(msg.seq)
+        const now = performance.now()
+        rttSamplesRef.current.push({ at: now, ms: now - sentAt })
+        return
+      }
       if (msg.id !== settingsRef.current?.faderId) return
-    if (draggingRef.current) return
-    setValue(msg.value)
-    // чтобы следующее движение ручкой не посчиталось «тем же значением» и ушло на сервер
-    lastSentValueRef.current = msg.value
-      setLastChange({ source: msg.source, by: msg.by })
+      // Значения приходят десятками в секунду, а экран обновляется раз в кадр: копим последнее
+      // и применяем перед отрисовкой. Во фоновой вкладке кадров нет — применится, когда её откроют.
+      incomingRef.current = msg
+      if (frameRef.current !== null) return
+      frameRef.current = requestAnimationFrame(() => {
+        frameRef.current = null
+        const m = incomingRef.current
+        incomingRef.current = null
+        // за кадр могли сменить «ID фейдера» или взять ручку
+        if (!m || m.id !== settingsRef.current?.faderId || draggingRef.current) return
+        setValue(m.value)
+        // чтобы следующее движение ручкой не посчиталось «тем же значением» и ушло на сервер
+        lastSentValueRef.current = m.value
+        setLastChange({ source: m.source, by: m.by })
+      })
     },
     [log, cancelPending],
   )
@@ -151,6 +180,7 @@ export default function App() {
   const [lastSent, setLastSent] = useState<number | null>(null)
   const [seq, setSeq] = useState(0)
   const [rate, setRate] = useState(0)
+  const [rtt, setRtt] = useState<RttStats | null>(null)
   const [manual, setManual] = useState('64')
 
   settingsRef.current = settings
@@ -175,12 +205,28 @@ export default function App() {
     log('info', 'Интерфейс запущен. Нажмите «Подключить», чтобы соединиться с сервером.')
   }, [log])
 
-  // счётчик сообщений в секунду
+  // счётчик сообщений в секунду и отклик — на экран 4 раза в секунду, а не на каждое сообщение
   useEffect(() => {
     const t = setInterval(() => {
-      const cutoff = performance.now() - 1000
+      const now = performance.now()
+      const cutoff = now - 1000
       sendTimesRef.current = sendTimesRef.current.filter((x) => x > cutoff)
       setRate(sendTimesRef.current.length)
+
+      const rttCutoff = now - RTT_WINDOW_MS
+      const samples = (rttSamplesRef.current = rttSamplesRef.current.filter((s) => s.at > rttCutoff))
+      // без ответа дольше окна — сервер отклонил (фейдер занят) или ответ потерялся; не копим
+      for (const [seq, at] of sentAtRef.current) if (at < rttCutoff) sentAtRef.current.delete(seq)
+      if (samples.length === 0) {
+        setRtt(null)
+        return
+      }
+      const next: RttStats = {
+        last: Math.round(samples[samples.length - 1].ms),
+        avg: Math.round(samples.reduce((sum, s) => sum + s.ms, 0) / samples.length),
+        max: Math.round(Math.max(...samples.map((s) => s.ms))),
+      }
+      setRtt((prev) => (prev && prev.last === next.last && prev.avg === next.avg && prev.max === next.max ? prev : next))
     }, 250)
     return () => clearInterval(t)
   }, [])
@@ -189,7 +235,9 @@ export default function App() {
     (v: number, force = false) => {
       if (!force && lastSentValueRef.current === v) return // не дублируем одно и то же значение
       seqRef.current += 1
+      const sentAt = performance.now()
       const ok = ws.send(makeFaderMessage(settings.faderId, v, seqRef.current))
+      if (ok) sentAtRef.current.set(seqRef.current, sentAt)
       setSeq(seqRef.current)
       lastSendTimeRef.current = performance.now()
       if (ok) {
@@ -225,6 +273,7 @@ export default function App() {
 
   useEffect(() => () => {
     if (timerRef.current !== null) clearTimeout(timerRef.current)
+    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current)
   }, [])
 
   const lockedByOther = owner !== null && owner !== myClientId
@@ -256,6 +305,10 @@ export default function App() {
       setOwner(null)
       setHwStatus(null)
       setLastChange(null)
+      // ответы на отправленное до обрыва уже не придут
+      sentAtRef.current.clear()
+      rttSamplesRef.current = []
+      setRtt(null)
     }
   }, [ws.status])
 
@@ -264,6 +317,10 @@ export default function App() {
     seqRef.current = 0
     setSeq(0)
     sendTimesRef.current = []
+    // seq начинается заново — старые ожидания ack перепутались бы с новыми
+    sentAtRef.current.clear()
+    rttSamplesRef.current = []
+    setRtt(null)
     log('info', 'Счётчики сброшены')
   }
 
@@ -343,6 +400,7 @@ export default function App() {
             retry={ws.retry}
             onRetryNow={ws.retryNow}
             rate={rate}
+            rtt={rtt}
             lastSent={lastSent}
             seq={seq}
             onResetStats={resetStats}
@@ -408,7 +466,7 @@ export default function App() {
           </section>
         </div>
 
-        <LogPanel entries={entries} onClear={clear} />
+        <LogPanel entries={entries} onClear={clear} verbose={verbose} onVerboseChange={setVerbose} />
       </main>
     </div>
   )

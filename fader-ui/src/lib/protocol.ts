@@ -94,8 +94,18 @@ export interface HwStatusMessage {
   error?: string
 }
 
-/** Входящие сообщения, на которые интерфейс реагирует. ack и error пока только пишутся в лог. */
-export type ServerMessage = HelloMessage | StateMessage | LockMessage | HwStatusMessage
+/**
+ * Сервер -> клиент: значение принято. По seq интерфейс находит, когда отправил это сообщение,
+ * и считает отклик «туда-обратно» по своим часам (deltaMs сервера сравнивает часы двух устройств — не годится).
+ */
+export interface AckMessage {
+  type: 'ack'
+  id: number
+  seq: number
+}
+
+/** Входящие сообщения, на которые интерфейс реагирует. error пока только пишется в лог. */
+export type ServerMessage = HelloMessage | StateMessage | AckMessage | LockMessage | HwStatusMessage
 
 const HW_STATES: HwState[] = ['disconnected', 'connecting', 'connected', 'waiting', 'error']
 const HW_KINDS: HwDevice['kind'][] = ['serial', 'midi', 'sim']
@@ -127,6 +137,7 @@ export function parseServerMessage(raw: string): ServerMessage | null {
     return null
   }
   if (m.type === 'hello' && isInt(m.clientId)) return { type: 'hello', clientId: m.clientId }
+  if (m.type === 'ack' && isInt(m.id) && isInt(m.seq)) return { type: 'ack', id: m.id, seq: m.seq }
   if (m.type === 'state' && isInt(m.id) && isInt(m.value) && (m.source === 'client' || m.source === 'hw')) {
     return {
       type: 'state',

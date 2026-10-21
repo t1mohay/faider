@@ -1,15 +1,21 @@
 // Запускает сервер и интерфейс одновременно в одном терминале.
 // Остановка: Ctrl+C (останавливает оба).
+//
+// --phone (npm run phone): интерфейс собирается и раздаётся как обычная, не отладочная версия.
+// Для телефона она заметно быстрее: в отладочной React делает лишние проверки, а Vite отдаёт
+// десятки отдельных файлов, что по Wi-Fi долго. Правки в коде подхватятся только после перезапуска.
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+const phone = process.argv.includes('--phone')
+const uiPort = phone ? 4173 : 5173
 
 const apps = [
-  { name: 'server', dir: 'fader-server', color: '\x1b[35m' },
-  { name: 'ui    ', dir: 'fader-ui', color: '\x1b[36m' },
+  { name: 'server', dir: 'fader-server', color: '\x1b[35m', script: phone ? 'start' : 'dev' },
+  { name: 'ui    ', dir: 'fader-ui', color: '\x1b[36m', script: phone ? 'serve' : 'dev' },
 ]
 
 for (const app of apps) {
@@ -20,7 +26,7 @@ for (const app of apps) {
 }
 
 const children = apps.map((app) => {
-  const child = spawn('npm', ['run', 'dev'], {
+  const child = spawn('npm', ['run', app.script], {
     cwd: join(root, app.dir),
     shell: true, // нужно для Windows (npm.cmd)
     env: { ...process.env, FORCE_COLOR: '1' },
@@ -55,7 +61,8 @@ function shutdown() {
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
-console.log('\nЗапускаю сервер и интерфейс…')
-console.log('  Интерфейс:        http://localhost:5173')
+console.log(phone ? '\nСобираю интерфейс и запускаю сервер (режим для телефона)…' : '\nЗапускаю сервер и интерфейс…')
+console.log(`  Интерфейс:        http://localhost:${uiPort}`)
+if (phone) console.log('  На телефоне:      QR-код в интерфейсе на ПК (панель «Открыть на телефоне»)')
 console.log('  Статус сервера:   http://localhost:8765')
 console.log('  Остановить:       Ctrl+C\n')

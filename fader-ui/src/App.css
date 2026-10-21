@@ -197,3 +197,6 @@ input:disabled, select:disabled { opacity: .6; }
 .phone__url { font-size: 14px; word-break: break-all; user-select: all; }
 .phone__info select { width: 100%; }
 .phone__info p { margin: 0; }
+
+/* мелкая подпись рядом с числом в счётчиках: «ср. 4 · макс 12» */
+.small-inline { font-size: 11px; white-space: nowrap; }

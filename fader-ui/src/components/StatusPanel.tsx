@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import type { ConnStatus, RetryInfo, WsStats } from '../hooks/useWebSocket'
 
+/** Отклик «отправил → получил ack» по часам этого устройства, мс, за последние 5 с. */
+export interface RttStats {
+  last: number
+  avg: number
+  max: number
+}
+
 interface StatusPanelProps {
   status: ConnStatus
   stats: WsStats
@@ -8,6 +15,7 @@ interface StatusPanelProps {
   retry: RetryInfo | null
   onRetryNow: () => void
   rate: number
+  rtt: RttStats | null
   lastSent: number | null
   seq: number
   onResetStats: () => void
@@ -34,6 +42,7 @@ export function StatusPanel({
   retry,
   onRetryNow,
   rate,
+  rtt,
   lastSent,
   seq,
   onResetStats,
@@ -80,6 +89,18 @@ export function StatusPanel({
         <div className={stats.dropped > 0 ? 'is-warn' : ''}>
           <dt>Не ушло</dt>
           <dd>{stats.dropped}</dd>
+        </div>
+        <div title="Время от отправки значения до ответа сервера (ack) по часам этого устройства. Среднее и максимум — за последние 5 с.">
+          <dt>Отклик, мс</dt>
+          <dd>
+            {rtt ? rtt.last : '—'}
+            {rtt && (
+              <span className="muted small-inline">
+                {' '}
+                ср. {rtt.avg} · макс {rtt.max}
+              </span>
+            )}
+          </dd>
         </div>
         <div>
           <dt>Сообщ./сек</dt>

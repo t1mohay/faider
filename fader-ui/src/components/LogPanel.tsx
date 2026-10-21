@@ -5,7 +5,13 @@ import type { LogEntry, LogLevel } from '../hooks/useLogger'
 interface LogPanelProps {
   entries: LogEntry[]
   onClear: () => void
+  /** Подробный лог: писать каждое значение фейдера туда и обратно, а не только события. */
+  verbose: boolean
+  onVerboseChange: (v: boolean) => void
 }
+
+/** Сколько строк рисуем. Остальные хранятся (до 1000) и попадают в «Скачать .txt». */
+const MAX_VISIBLE = 200
 
 const LEVELS: { level: LogLevel; title: string }[] = [
   { level: 'sent', title: 'Отправлено' },
@@ -23,7 +29,7 @@ const TAG: Record<LogLevel, string> = {
   error: 'ERROR',
 }
 
-export function LogPanel({ entries, onClear }: LogPanelProps) {
+export function LogPanel({ entries, onClear, verbose, onVerboseChange }: LogPanelProps) {
   const [enabled, setEnabled] = useState<Record<LogLevel, boolean>>({
     sent: true,
     recv: true,
@@ -34,7 +40,10 @@ export function LogPanel({ entries, onClear }: LogPanelProps) {
   const [autoScroll, setAutoScroll] = useState(true)
   const listRef = useRef<HTMLDivElement>(null)
 
-  const visible = useMemo(() => entries.filter((e) => enabled[e.level]), [entries, enabled])
+  const visible = useMemo(() => {
+    const filtered = entries.filter((e) => enabled[e.level])
+    return filtered.length > MAX_VISIBLE ? filtered.slice(filtered.length - MAX_VISIBLE) : filtered
+  }, [entries, enabled])
 
   const counts = useMemo(() => {
     const c: Record<LogLevel, number> = { sent: 0, recv: 0, info: 0, warn: 0, error: 0 }
@@ -73,6 +82,13 @@ export function LogPanel({ entries, onClear }: LogPanelProps) {
           ))}
         </div>
         <div className="log__actions">
+          <label
+            className="check"
+            title="Писать в лог каждое значение фейдера (отправленное, state, ack). На телефоне может тормозить."
+          >
+            <input type="checkbox" checked={verbose} onChange={(e) => onVerboseChange(e.target.checked)} />
+            Подробный лог
+          </label>
           <label className="check">
             <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
             Автопрокрутка
@@ -87,6 +103,9 @@ export function LogPanel({ entries, onClear }: LogPanelProps) {
       </header>
       <div className="log__list" ref={listRef}>
         {visible.length === 0 && <div className="log__empty">Пока пусто</div>}
+        {visible.length === MAX_VISIBLE && (
+          <div className="log__empty">Показаны последние {MAX_VISIBLE} строк — весь лог в «Скачать .txt»</div>
+        )}
         {visible.map((e) => (
           <div key={e.id} className={`log__row log__row--${e.level}`}>
             <span className="log__time">{formatTime(e.time)}</span>

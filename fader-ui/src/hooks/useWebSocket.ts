@@ -24,6 +24,8 @@ export interface WsStats {
 }
 
 const EMPTY_STATS: WsStats = { sent: 0, received: 0, dropped: 0, bytesSent: 0 }
+/** Счётчики считаются на каждое сообщение, а на экран попадают раз в столько мс — без перерисовки на каждое. */
+const STATS_FLUSH_MS = 250
 
 /** Расшифровка кодов закрытия WebSocket для логов. */
 function describeClose(code: number): string {
@@ -46,6 +48,17 @@ export function useWebSocket(log: Logger, onMessage?: (msg: ServerMessage) => vo
   onMessageRef.current = onMessage
   const [status, setStatus] = useState<ConnStatus>('disconnected')
   const [stats, setStats] = useState<WsStats>(EMPTY_STATS)
+  const statsRef = useRef<WsStats>({ ...EMPTY_STATS })
+  const statsTimerRef = useRef<number | null>(null)
+  /** Изменить счётчики; на экран — пачкой, см. STATS_FLUSH_MS. */
+  const bumpStats = useCallback((patch: (s: WsStats) => void) => {
+    patch(statsRef.current)
+    if (statsTimerRef.current !== null) return
+    statsTimerRef.current = window.setTimeout(() => {
+      statsTimerRef.current = null
+      setStats({ ...statsRef.current })
+    }, STATS_FLUSH_MS)
+  }, [])
   const [connectedAt, setConnectedAt] = useState<number | null>(null)
   const [retry, setRetry] = useState<RetryInfo | null>(null)
 
@@ -113,11 +126,16 @@ export function useWebSocket(log: Logger, onMessage?: (msg: ServerMessage) => vo
 
     ws.onmessage = (ev) => {
       if (wsRef.current !== ws) return
-      setStats((s) => ({ ...s, received: s.received + 1 }))
-      const data = typeof ev.data === 'string' ? ev.data : `[бинарные данные, ${(ev.data as Blob).size ?? '?'} байт]`
-      log('recv', data)
-      if (typeof ev.data !== 'string') return
+      bumpStats((s) => {
+        s.received++
+      })
+      if (typeof ev.data !== 'string') {
+        log('recv', `[бинарные данные, ${(ev.data as Blob).size ?? '?'} байт]`)
+        return
+      }
       const msg = parseServerMessage(ev.data)
+      // state и ack идут потоком, пока двигают фейдер — в лог только в «подробном» режиме
+      log('recv', ev.data, { routine: msg?.type === 'state' || msg?.type === 'ack' })
       if (msg) onMessageRef.current?.(msg)
     }
 
@@ -147,7 +165,7 @@ export function useWebSocket(log: Logger, onMessage?: (msg: ServerMessage) => vo
       setStatus('disconnected')
       log('info', opened ? `Соединение закрыто: код ${ev.code}` : 'Попытка подключения прервана')
     }
-  }, [log, scheduleRetry])
+  }, [log, scheduleRetry, bumpStats])
   openRef.current = open
 
   const connect = useCallback(
@@ -208,26 +226,37 @@ export function useWebSocket(log: Logger, onMessage?: (msg: ServerMessage) => vo
     (payload: unknown): boolean => {
       const ws = wsRef.current
       const text = JSON.stringify(payload)
+      // значения фейдера идут потоком — в лог только в «подробном» режиме
+      const routine = (payload as { type?: unknown } | null)?.type === 'fader'
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        setStats((s) => ({ ...s, dropped: s.dropped + 1 }))
-        log('warn', `НЕ отправлено (нет соединения): ${text}`)
+        bumpStats((s) => {
+          s.dropped++
+        })
+        log('warn', `НЕ отправлено (нет соединения): ${text}`, { routine })
         return false
       }
       ws.send(text)
-      setStats((s) => ({ ...s, sent: s.sent + 1, bytesSent: s.bytesSent + text.length }))
-      log('sent', text)
+      bumpStats((s) => {
+        s.sent++
+        s.bytesSent += text.length
+      })
+      log('sent', text, { routine })
       return true
     },
-    [log],
+    [log, bumpStats],
   )
 
-  const resetStats = useCallback(() => setStats(EMPTY_STATS), [])
+  const resetStats = useCallback(() => {
+    statsRef.current = { ...EMPTY_STATS }
+    setStats({ ...EMPTY_STATS })
+  }, [])
 
   // закрыть сокет при уходе со страницы / размонтировании и не переподключаться
   useEffect(
     () => () => {
       wantedRef.current = false
       clearRetryTimer()
+      if (statsTimerRef.current !== null) clearTimeout(statsTimerRef.current)
       wsRef.current?.close(1000, 'unmount')
     },
     [clearRetryTimer],
